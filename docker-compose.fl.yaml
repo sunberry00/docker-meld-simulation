@@ -1,0 +1,157 @@
+# =============================================================================
+# docker-compose.fl.yaml — full FL simulation stack: 5 clinics + orchestrators.
+#
+# Each clinic = one lightweight PostgreSQL with a minimal i2b2 schema
+# (infra/pg-i2b2/init.sql) + one MELD orchestrator in API mode ("serve").
+# A full docker-aktin-dwh (Postgres + WildFly + Apache) is NOT needed for
+# training: the orchestrator only talks SQL to the clinic database.
+#
+# The FL server (fl_server.py) runs on the HOST and talks to the orchestrators
+# on ports 8100-8104. Clinic databases are exposed on 5440-5444 so that
+# pipeline/03_load_clinics.py can load the simulated dumps from the host.
+#
+#   Lifecycle of one experiment (see run_experiment.py):
+#     docker compose -f docker-compose.fl.yaml up -d      # spin up
+#     python pipeline/03_load_clinics.py ... (x5)          # load data
+#     python fl_server.py --sites http://localhost:8100 .. # train
+#     docker compose -f docker-compose.fl.yaml down -v     # destroy all
+#
+# Build prerequisites (once):
+#   docker build -t meld-orchestrator:fl ./MELD
+#   docker build -t meld-runtime:fl      ./runtime
+# =============================================================================
+
+x-clinic-db: &clinic-db
+  image: postgres:16-alpine
+  environment:
+    POSTGRES_USER: i2b2crcdata
+    POSTGRES_PASSWORD: demouser
+    POSTGRES_DB: i2b2
+  volumes:
+    - ./infra/pg-i2b2/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U i2b2crcdata -d i2b2"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+  networks: [fl_net]
+
+x-orchestrator: &orchestrator
+  image: meld-orchestrator:fl
+  command: ["serve"]
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - ./config/contract_training.yaml:/resources/contract.yaml:ro
+  networks: [fl_net]
+
+services:
+  # ---------------------------------------------------------------- clinic 0
+  db0:
+    <<: *clinic-db
+    ports: ["5440:5432"]
+  site0:
+    <<: *orchestrator
+    environment: &site0-env
+      MELD_API_PORT: 8000
+      MELD_CONTRACT_FILE: /resources/contract.yaml
+      MELD_ADAPTER_STORE: /adapter_store
+      DB_HOST: db0
+      DB_PORT: 5432
+      DB_USER: i2b2crcdata
+      DB_PASSWORD: demouser
+      DB_SCHEMA: i2b2
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/contract_training.yaml:/resources/contract.yaml:ro
+      - site0_adapter:/adapter_store
+      - site0_jobs:/jobs
+    ports: ["8100:8000"]
+    depends_on:
+      db0: {condition: service_healthy}
+
+  # ---------------------------------------------------------------- clinic 1
+  db1:
+    <<: *clinic-db
+    ports: ["5441:5432"]
+  site1:
+    <<: *orchestrator
+    environment:
+      <<: *site0-env
+      DB_HOST: db1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/contract_training.yaml:/resources/contract.yaml:ro
+      - site1_adapter:/adapter_store
+      - site1_jobs:/jobs
+    ports: ["8101:8000"]
+    depends_on:
+      db1: {condition: service_healthy}
+
+  # ---------------------------------------------------------------- clinic 2
+  db2:
+    <<: *clinic-db
+    ports: ["5442:5432"]
+  site2:
+    <<: *orchestrator
+    environment:
+      <<: *site0-env
+      DB_HOST: db2
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/contract_training.yaml:/resources/contract.yaml:ro
+      - site2_adapter:/adapter_store
+      - site2_jobs:/jobs
+    ports: ["8102:8000"]
+    depends_on:
+      db2: {condition: service_healthy}
+
+  # ---------------------------------------------------------------- clinic 3
+  db3:
+    <<: *clinic-db
+    ports: ["5443:5432"]
+  site3:
+    <<: *orchestrator
+    environment:
+      <<: *site0-env
+      DB_HOST: db3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/contract_training.yaml:/resources/contract.yaml:ro
+      - site3_adapter:/adapter_store
+      - site3_jobs:/jobs
+    ports: ["8103:8000"]
+    depends_on:
+      db3: {condition: service_healthy}
+
+  # ---------------------------------------------------------------- clinic 4
+  db4:
+    <<: *clinic-db
+    ports: ["5444:5432"]
+  site4:
+    <<: *orchestrator
+    environment:
+      <<: *site0-env
+      DB_HOST: db4
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./config/contract_training.yaml:/resources/contract.yaml:ro
+      - site4_adapter:/adapter_store
+      - site4_jobs:/jobs
+    ports: ["8104:8000"]
+    depends_on:
+      db4: {condition: service_healthy}
+
+volumes:
+  site0_adapter:
+  site1_adapter:
+  site2_adapter:
+  site3_adapter:
+  site4_adapter:
+  site0_jobs:
+  site1_jobs:
+  site2_jobs:
+  site3_jobs:
+  site4_jobs:
+
+networks:
+  fl_net:
