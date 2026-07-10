@@ -1,0 +1,178 @@
+# =============================================================================
+# Training contract for the FL simulation.
+#
+# The query mirrors pipeline/01_export_dump.py exactly (same concept codes,
+# same predictors, same target derivation), so the feature space inside the
+# runtime container matches the Step-1 dataset that produced the initial
+# backbone and the preprocessor baked into the runtime image (/artifact).
+#
+# Used by every clinic's MELD orchestrator: it runs this query against the
+# clinic's OWN database and hands the resulting CSV to the runtime container.
+# =============================================================================
+
+contract:
+  name: "fl-verbleib-training"
+  description: "ED disposition (Verbleib) prediction — federated training contract"
+  version: "0.1.0"
+
+runtime:
+  framework: "pytorch"
+  image:
+    name: "meld-runtime"
+    tag: "fl"
+    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  environment_variables:
+    TRAIN_EPOCHS: "5"
+    TRAIN_BATCH_SIZE: "256"
+    TRAIN_LR: "0.001"
+
+input_schema:
+  temporal_scope:
+    type: "absolute"
+    start: "2000-01-01T00:00:00Z"
+    end: "2099-12-31T23:59:59Z"
+
+  features:
+    - name: "age_in_years"
+      datatype: "Int64"
+    - name: "gender"
+      datatype: "string"
+    - name: "triage_score"
+      datatype: "string"
+    - name: "cedis_code"
+      datatype: "string"
+    - name: "respiratory_rate"
+      datatype: "Float64"
+    - name: "heart_rate"
+      datatype: "Float64"
+    - name: "oxygen_saturation"
+      datatype: "Float64"
+    - name: "body_temperature"
+      datatype: "Float64"
+    - name: "gcs_total_score"
+      datatype: "Float64"
+    - name: "pain_level"
+      datatype: "Float64"
+    - name: "waiting_time_minutes"
+      datatype: "Float64"
+
+  query:
+    type: "sql"
+    statement: |
+      WITH
+      EncounterBase AS (
+          SELECT DISTINCT
+              obs.encounter_num,
+              obs.patient_num,
+              EXTRACT(years FROM age(vis_dim.start_date, pat_dim.birth_date)) AS age_in_years,
+              pat_dim.sex_cd AS gender,
+              vis_dim.start_date AS admission_ts,
+              EXTRACT(HOUR FROM vis_dim.start_date) AS admission_hour,
+              EXTRACT(ISODOW FROM vis_dim.start_date) AS admission_weekday,
+              CASE
+                  WHEN EXTRACT(HOUR FROM vis_dim.start_date) >= 6  AND EXTRACT(HOUR FROM vis_dim.start_date) < 12 THEN 'Morning'
+                  WHEN EXTRACT(HOUR FROM vis_dim.start_date) >= 12 AND EXTRACT(HOUR FROM vis_dim.start_date) < 18 THEN 'Afternoon'
+                  WHEN EXTRACT(HOUR FROM vis_dim.start_date) >= 18 AND EXTRACT(HOUR FROM vis_dim.start_date) < 22 THEN 'Evening'
+                  ELSE 'Night'
+              END AS time_of_day
+          FROM i2b2crcdata.observation_fact obs
+          JOIN i2b2crcdata.patient_dimension pat_dim ON obs.patient_num = pat_dim.patient_num
+          JOIN i2b2crcdata.visit_dimension vis_dim ON obs.encounter_num = vis_dim.encounter_num
+          WHERE vis_dim.start_date BETWEEN :start AND :end
+      ),
+      FirstContact AS (
+          SELECT encounter_num, MIN(start_date) AS contact_ts
+          FROM i2b2crcdata.observation_fact
+          WHERE concept_cd = 'AKTIN:PHYSENCOUNTER'
+          GROUP BY encounter_num
+      ),
+      Predictors AS (
+          SELECT
+              o.encounter_num,
+              MAX(CASE
+                  WHEN o.concept_cd = '75322-8:UNK' THEN '999'
+                  WHEN o.concept_cd = 'CEDIS30:UNK' THEN '999'
+                  WHEN o.concept_cd LIKE '75322-8%' THEN substr(o.concept_cd, 9)
+                  WHEN o.concept_cd LIKE 'CEDIS30:%' THEN substr(o.concept_cd, 9)
+              END) AS cedis_code,
+              MAX(CASE
+                  WHEN o.concept_cd LIKE 'MTS:%' THEN substr(o.concept_cd, 5)
+                  WHEN o.concept_cd LIKE 'ESI:%' THEN substr(o.concept_cd, 5)
+              END) AS triage_score,
+              MAX(CASE
+                  WHEN o.concept_cd LIKE 'AKTIN:REFERRAL:%' THEN substr(o.concept_cd, 16)
+              END) AS referral_type,
+              MAX(CASE
+                  WHEN o.concept_cd IN ('AKTIN:ISOLATION:ISO', 'AKTIN:ISOLATION:RISO', 'AKTIN:ISOLATION:ISO:NEG')
+                  THEN o.concept_cd
+              END) AS isolation_status,
+              MAX(CASE WHEN o.concept_cd = 'LOINC:9279-1'  THEN o.nval_num END) AS respiratory_rate,
+              MAX(CASE WHEN o.concept_cd = 'LOINC:8867-4'  THEN o.nval_num END) AS heart_rate,
+              MAX(CASE WHEN o.concept_cd = 'LOINC:20564-1' THEN o.nval_num END) AS oxygen_saturation,
+              MAX(CASE WHEN o.concept_cd = 'LOINC:8329-5'  THEN o.nval_num END) AS body_temperature,
+              MAX(CASE WHEN o.concept_cd = 'LOINC:9269-2'  THEN o.nval_num END) AS gcs_total_score,
+              MAX(CASE WHEN o.concept_cd = 'LOINC:72514-3' THEN o.nval_num END) AS pain_level
+          FROM i2b2crcdata.observation_fact o
+          JOIN FirstContact fc ON o.encounter_num = fc.encounter_num
+          WHERE o.modifier_cd = '@'
+            AND o.start_date <= (fc.contact_ts + INTERVAL '30 minutes')
+          GROUP BY o.encounter_num
+      ),
+      Target AS (
+          SELECT
+              encounter_num,
+              MAX(CASE
+                  WHEN concept_cd = 'AKTIN:TRANSFER:1' THEN 'Aufnahme in Funktionsbereich'
+                  WHEN concept_cd = 'AKTIN:TRANSFER:2' THEN 'Verlegung extern in Funktionsbereich'
+                  WHEN concept_cd = 'AKTIN:TRANSFER:3' THEN 'Aufnahme auf Ueberwachungsstation'
+                  WHEN concept_cd = 'AKTIN:TRANSFER:4' THEN 'Verlegung extern auf Ueberwachungsstation'
+                  WHEN concept_cd = 'AKTIN:TRANSFER:5' THEN 'Aufnahme auf Normalstation'
+                  WHEN concept_cd = 'AKTIN:TRANSFER:6' THEN 'Verlegung extern auf Normalstation'
+                  WHEN concept_cd = 'AKTIN:DISCHARGE:1' THEN 'Tod'
+                  WHEN concept_cd = 'AKTIN:DISCHARGE:2' THEN 'Entlassung gegen aerztlichen Rat'
+                  WHEN concept_cd = 'AKTIN:DISCHARGE:3' THEN 'Behandlung durch Pat. abgebrochen'
+                  WHEN concept_cd = 'AKTIN:DISCHARGE:4' THEN 'Entlassung nach Hause'
+                  WHEN concept_cd = 'AKTIN:DISCHARGE:5' THEN 'Entlassung zu weiterbehandelnden Arzt'
+                  WHEN concept_cd = 'AKTIN:DISCHARGE:6' THEN 'kein Arztkontakt'
+                  WHEN concept_cd = 'AKTIN:DISCHARGE:OTH' THEN 'Sonstige Entlassung'
+              END) AS verbleib
+          FROM i2b2crcdata.observation_fact
+          WHERE modifier_cd = '@'
+            AND ((concept_cd LIKE '%TRANSFER%' AND concept_cd <> 'AKTIN:TRANSFER:ZeitpunktVerlegung')
+                 OR concept_cd LIKE '%DISCHARGE%')
+          GROUP BY encounter_num
+      )
+      SELECT
+          b.encounter_num,
+          b.age_in_years,
+          b.gender,
+          b.admission_ts,
+          fc.contact_ts,
+          EXTRACT(EPOCH FROM (fc.contact_ts - b.admission_ts))/60 AS waiting_time_minutes,
+          b.admission_hour,
+          b.admission_weekday,
+          b.time_of_day,
+          p.cedis_code,
+          p.triage_score,
+          p.referral_type,
+          p.isolation_status,
+          p.respiratory_rate,
+          p.heart_rate,
+          p.oxygen_saturation,
+          p.body_temperature,
+          p.gcs_total_score,
+          p.pain_level,
+          t.verbleib,
+          (CASE WHEN t.verbleib LIKE 'Aufnahme%' THEN 1 ELSE 0 END) AS admitted
+      FROM EncounterBase b
+      JOIN FirstContact fc ON b.encounter_num = fc.encounter_num
+      LEFT JOIN Predictors p ON b.encounter_num = p.encounter_num
+      JOIN Target t ON b.encounter_num = t.encounter_num
+      WHERE t.verbleib IS NOT NULL
+        AND t.verbleib <> 'kein Arztkontakt';
+
+output_schema:
+  type: "csv"
+  predictor:
+    - name: "admitted"
+      datatype: "Int64"

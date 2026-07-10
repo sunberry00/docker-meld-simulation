@@ -1,0 +1,36 @@
+# =============================================================================
+# Experiment config — one full FL simulation cycle.
+#
+#   python run_experiment.py --config config/experiment.yaml
+#
+# Phase 0 (once, beforehand): create the immutable dump from your source DWH:
+#   python pipeline/01_export_dump.py --db-uri <SOURCE_DB> --out data/dump.parquet
+# =============================================================================
+
+# --- inputs ---
+dump_path: data/dump.parquet                 # the immutable dump (Phase 0 output)
+source_db: postgresql://i2b2crcdata:demouser@localhost:5432/i2b2   # your big DWH
+simulation_config: config/simulation.yaml    # shift definitions (Level 1-4)
+scenario: level1_volume                      # which scenario to run this time
+initial_backbone: /home/aivanets/bachelor/pipeline/results/step1/artifact/model.pt        # Step-1 trained backbone as FL init
+
+# --- experiment parameters (reported in the thesis) ---
+seed: 42
+n_sites: 5
+fl_rounds: 10
+
+# --- data splitting (no leakage) ---
+# global_holdout: carved from the dump BEFORE clinics are sampled -> in NO clinic.
+# Per clinic, the remainder is split chronologically train/val/test.
+# Only *_train goes into the clinic DWH; *_val and *_test stay on the host.
+holdout_frac: 0.15
+train_frac: 0.70
+val_frac: 0.15
+
+# --- infrastructure ---
+compose_file: docker-compose.fl.yaml
+dwh_base_port: 5440       # clinic DBs on 5440..5444
+api_base_port: 8100       # orchestrator APIs on 8100..8104
+
+# --- output ---
+out_dir: experiments/level1_volume

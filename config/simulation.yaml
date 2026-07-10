@@ -1,0 +1,61 @@
+# Simulation config: controlled clinic heterogeneity for FL experiments.
+#
+# Each scenario produces 5 clinic subsets from the immutable dump.
+# Scenarios are run independently first (per assignment), then combined.
+# All sampling is case-based (whole encounters), never single-value overwrites.
+
+seed: 42
+
+scenarios:
+  # ---- Level 1: case volume only ----
+  level1_volume:
+    level: level1
+    sizes: [2000, 1500, 1000, 500, 200]
+
+  # ---- Level 2: age distribution (equal volume) ----
+  level2_age:
+    level: level2
+    n_per_site: 1000
+    profiles:
+      - {"0-17": 0.30, "18-39": 0.30, "40-64": 0.20, "65+": 0.20}   # pediatric / young ED
+      - {"0-17": 0.10, "18-39": 0.20, "40-64": 0.30, "65+": 0.40}   # elderly-heavy
+      - {"0-17": 0.20, "18-39": 0.30, "40-64": 0.30, "65+": 0.20}   # balanced urban
+      - {"0-17": 0.05, "18-39": 0.15, "40-64": 0.30, "65+": 0.50}   # geriatric center
+      - {"0-17": 0.25, "18-39": 0.25, "40-64": 0.25, "65+": 0.25}   # uniform reference
+
+  # ---- Level 3: gender distribution (equal volume) ----
+  level3_gender:
+    level: level3
+    n_per_site: 1000
+    profiles:
+      - {"M": 0.70, "F": 0.30}
+      - {"M": 0.30, "F": 0.70}
+      - {"M": 0.50, "F": 0.50}
+      - {"M": 0.60, "F": 0.40}
+      - {"M": 0.40, "F": 0.60}
+
+  # ---- Level 4: MTS triage mix (equal volume) ----
+  level4_triage:
+    level: level4
+    n_per_site: 1000
+    profiles:
+      - {"1": 0.15, "2": 0.35, "3": 0.30, "4": 0.15, "5": 0.05}   # level-1 trauma center
+      - {"1": 0.02, "2": 0.10, "3": 0.30, "4": 0.40, "5": 0.18}   # low-acuity walk-in
+      - {"1": 0.05, "2": 0.20, "3": 0.40, "4": 0.25, "5": 0.10}   # typical mixed ED
+      - {"1": 0.10, "2": 0.30, "3": 0.35, "4": 0.20, "5": 0.05}   # urban high-acuity
+      - {"1": 0.03, "2": 0.15, "3": 0.35, "4": 0.30, "5": 0.17}   # suburban community
+
+  # ---- Combined: all four axes vary simultaneously ----
+  combined:
+    level: combined
+    sites:
+      - {n_cases: 2000, age_weights: {"0-17": 0.30, "18-39": 0.30, "40-64": 0.20, "65+": 0.20},
+         triage_weights: {"1": 0.15, "2": 0.35, "3": 0.30, "4": 0.15, "5": 0.05}}
+      - {n_cases: 1500, age_weights: {"0-17": 0.10, "18-39": 0.20, "40-64": 0.30, "65+": 0.40},
+         triage_weights: {"1": 0.02, "2": 0.10, "3": 0.30, "4": 0.40, "5": 0.18}}
+      - {n_cases: 1000, age_weights: {"0-17": 0.20, "18-39": 0.30, "40-64": 0.30, "65+": 0.20},
+         triage_weights: {"1": 0.05, "2": 0.20, "3": 0.40, "4": 0.25, "5": 0.10}}
+      - {n_cases: 500, age_weights: {"0-17": 0.05, "18-39": 0.15, "40-64": 0.30, "65+": 0.50},
+         triage_weights: {"1": 0.10, "2": 0.30, "3": 0.35, "4": 0.20, "5": 0.05}}
+      - {n_cases: 200, age_weights: {"0-17": 0.25, "18-39": 0.25, "40-64": 0.25, "65+": 0.25},
+         gender_weights: {"M": 0.70, "F": 0.30}}

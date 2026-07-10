@@ -1,0 +1,15 @@
+{
+  "type": "transformer",
+  "backbone": "transformer",
+  "n_features": 38,
+  "d_model": 64,
+  "n_heads": 4,
+  "n_layers": 2,
+  "d_ffn": 128,
+  "dropout": 0.1,
+  "lora": {
+    "rank": 8,
+    "alpha": 1,
+    "apply_to": "hidden"
+  }
+}

@@ -55,8 +55,7 @@
           },
           "required": [
             "name",
-            "tag",
-            "digest"
+            "tag"
           ]
         },
         "environment_variables": {

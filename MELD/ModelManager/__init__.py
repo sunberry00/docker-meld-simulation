@@ -1,2 +1,2 @@
 from .config_loader import load_contract
-from .manager import run_inference#, run_training
+from .manager import run_inference

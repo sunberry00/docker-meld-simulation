@@ -1,0 +1,10 @@
+# Host-side dependencies: pipeline scripts (01-03), run_experiment.py, fl_server.py.
+# The MELD orchestrator image and the runtime image have their own requirements.
+pandas
+pyarrow
+numpy
+PyYAML
+SQLAlchemy
+psycopg2-binary
+requests
+torch
