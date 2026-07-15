@@ -1,1 +1,0 @@
-docker run --rm -i -v "$(pwd)/shared:/shared/:rw" -v /var/run/docker.sock:/var/run/docker.sock orchestrator-test

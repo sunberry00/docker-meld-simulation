@@ -52,6 +52,9 @@ class FeatureSpec:
         "gcs_total_score", "pain_level", "triage_score",
     ])
     cedis_min_freq: float = 0.01
+    # isolation_status is ~100% missing in the data, so is_isolated is a dead
+    # (always-0) feature. Dropped by default; set True to re-enable.
+    include_isolation: bool = False
     target: str = "admitted"
 
 
@@ -164,9 +167,10 @@ class Preprocessor:
         # engineered binaries
         wd = self._to_num(df, "admission_weekday")
         blocks.append((wd >= 6).fillna(False).to_numpy(dtype=np.float32).reshape(-1, 1))
-        iso = df.get("isolation_status")
-        iso_flag = (iso.notna() if iso is not None else pd.Series([False] * len(df)))
-        blocks.append(iso_flag.to_numpy(dtype=np.float32).reshape(-1, 1))
+        if s.include_isolation:
+            iso = df.get("isolation_status")
+            iso_flag = (iso.notna() if iso is not None else pd.Series([False] * len(df)))
+            blocks.append(iso_flag.to_numpy(dtype=np.float32).reshape(-1, 1))
 
         # one-hot categoricals against the fixed train vocabulary
         for col in s.categorical:
@@ -188,7 +192,9 @@ class Preprocessor:
         s = self.spec
         names = list(self._num_cols)
         names += [f"{c}_missing" for c in s.missingness_indicators]
-        names += ["is_weekend", "is_isolated"]
+        names += ["is_weekend"]
+        if s.include_isolation:
+            names += ["is_isolated"]
         for col in s.categorical:
             names += [f"{col}={c}" for c in self.categories_[col]]
         return names

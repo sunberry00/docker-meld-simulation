@@ -70,9 +70,14 @@ def _dispatch(sites: list[str], backbone_path: str) -> dict[str, str]:
 
 
 def _poll_until_done(jobs: dict[str, str], poll_interval: float = 5.0,
-                     timeout: float = 600.0) -> dict[str, dict]:
-    """Poll all sites until every job is Completed or Failed."""
+                     timeout: float = 600.0) -> tuple[dict[str, dict], dict[str, str]]:
+    """Poll all sites until every job is Completed or Failed.
+
+    Returns (completed_results, failed_job_ids) so the caller can still collect
+    container logs from the failed sites — that is when logs matter most.
+    """
     results: dict[str, dict] = {}
+    failed: dict[str, str] = {}
     pending = dict(jobs)
     t0 = time.time()
 
@@ -91,12 +96,29 @@ def _poll_until_done(jobs: dict[str, str], poll_interval: float = 5.0,
                     print(f"  {url} completed (n_samples={n})")
                 elif state == "Failed":
                     print(f"  {url} FAILED: {data.get('error', '?')}")
+                    failed[url] = job_id
                     del pending[url]
             except Exception as e:
                 pass  # retry next poll
         if pending:
             time.sleep(poll_interval)
-    return results
+    return results, failed
+
+
+def _collect_logs(jobs: dict[str, str], round_dir: str) -> None:
+    """Save each site's runtime-container logs into the round folder.
+
+    Called for every dispatched job — completed AND failed — so a post-mortem is
+    always possible after the clinics are torn down.
+    """
+    for i, (url, job_id) in enumerate(jobs.items()):
+        try:
+            resp = requests.get(f"{url}/logs/{job_id}", timeout=15)
+            path = os.path.join(round_dir, f"site{i}_job{job_id}_logs.txt")
+            with open(path, "w") as f:
+                f.write(resp.text)
+        except Exception as e:
+            print(f"  (could not fetch logs from {url}: {e})")
 
 
 def _collect_backbones(results: dict[str, dict], round_dir: str) -> list[dict]:
@@ -134,7 +156,12 @@ def run_fl(sites: list[str], n_rounds: int, backbone_path: str,
         os.makedirs(round_dir, exist_ok=True)
 
         jobs = _dispatch(sites, global_path)
-        results = _poll_until_done(jobs, poll_interval)
+        results, failed = _poll_until_done(jobs, poll_interval)
+
+        # Always persist per-site container logs for this round (incl. failures).
+        _collect_logs(jobs, round_dir)
+        if failed:
+            print(f"  logs of failed sites saved to {round_dir}/")
 
         if not results:
             print("  no sites completed — skipping aggregation")

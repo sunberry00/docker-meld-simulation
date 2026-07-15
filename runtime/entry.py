@@ -42,14 +42,27 @@ def _load_contract() -> dict:
 
 
 def _load_model_config() -> dict:
-    # Prefer a config shipped alongside the backbone in /input (so the model
-    # architecture always matches the incoming weights), fall back to the one
-    # baked into the image at /artifact.
-    for path in ("/input/model_config.json", "/artifact/model_config.json"):
+    """Pick the architecture blueprint.
+
+    Priority:
+      1. /input/model_config.json     — shipped with the weights (always matches)
+      2. /artifact/model_config_<BACKBONE>.json — selected by the BACKBONE env var
+         (set in the training contract), so one image serves every architecture
+      3. /artifact/model_config.json  — legacy single-backbone fallback
+    """
+    backbone = os.environ.get("BACKBONE", "").strip()
+    candidates = ["/input/model_config.json"]
+    if backbone:
+        candidates.append(f"/artifact/model_config_{backbone}.json")
+    candidates.append("/artifact/model_config.json")
+
+    for path in candidates:
         if os.path.isfile(path):
             with open(path) as f:
-                return json.load(f)
-    raise FileNotFoundError("no model_config.json in /input or /artifact")
+                mc = json.load(f)
+            print(f"Model config: {path} (backbone={mc.get('backbone', mc.get('type'))})")
+            return mc
+    raise FileNotFoundError(f"no model config found; tried: {candidates}")
 
 
 # ------------------------------------------------------------------ inference
@@ -94,16 +107,22 @@ def run_train(df: pd.DataFrame) -> None:
         model.load_state_dict(torch.load("/input/backbone.pt", weights_only=True))
         print("Loaded backbone from /input/backbone.pt")
 
-    # Attach LoRA adapters.
-    lora = mc.get("lora", {})
-    add_lora(model, lora.get("rank", 4), lora.get("alpha", 12),
-             include_head=(lora.get("apply_to") == "all"))
+    # Attach LoRA adapters — only in the personalised variant.
+    # USE_LORA=1 -> FedAvg+LoRA (private per-site adapter, never transmitted)
+    # USE_LORA=0 -> pure FedAvg (backbone only, no site-specific parameters)
+    use_lora = os.environ.get("USE_LORA", "1") == "1"
+    if use_lora:
+        lora = mc.get("lora", {})
+        add_lora(model, lora.get("rank", 4), lora.get("alpha", 12),
+                 include_head=(lora.get("apply_to") == "all"))
 
-    # Load previous-round adapter if available.
-    if os.path.isfile("/input/adapter.pt"):
-        model.load_state_dict(torch.load("/input/adapter.pt", weights_only=True),
-                              strict=False)
-        print("Loaded adapter from /input/adapter.pt")
+        # Load previous-round adapter if available.
+        if os.path.isfile("/input/adapter.pt"):
+            model.load_state_dict(torch.load("/input/adapter.pt", weights_only=True),
+                                  strict=False)
+            print("Loaded adapter from /input/adapter.pt")
+    else:
+        print("USE_LORA=0 — pure FedAvg, no adapter attached")
 
     # Prepare data.
     pre = Preprocessor.load("/artifact/preprocessor.pkl")
@@ -139,10 +158,11 @@ def run_train(df: pd.DataFrame) -> None:
 
     # Write outputs.
     torch.save(backbone_state(model), "/output/backbone.pt")
-    torch.save(adapter_state(model), "/output/adapter.pt")
+    if use_lora:
+        torch.save(adapter_state(model), "/output/adapter.pt")
     with open("/output/metadata.json", "w") as f:
         json.dump({"n_samples": n_samples, "train_loss": round(final_loss, 5),
-                    "epochs": epochs}, f)
+                    "epochs": epochs, "use_lora": use_lora}, f)
 
     print(f"Training complete: {n_samples} samples, {epochs} epochs → /output/")
 

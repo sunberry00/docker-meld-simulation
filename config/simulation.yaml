@@ -1,8 +1,16 @@
 # Simulation config: controlled clinic heterogeneity for FL experiments.
 #
-# Each scenario produces 5 clinic subsets from the immutable dump.
-# Scenarios are run independently first (per assignment), then combined.
-# All sampling is case-based (whole encounters), never single-value overwrites.
+# Each scenario produces 5 clinic subsets from the immutable dump. Clinics
+# PARTITION the pool (disjoint by construction — no encounter appears in two
+# clinics). All sampling is case-based (whole encounters), never single-value
+# overwrites.
+#
+# Sizes are calibrated to the real dump (~42.7k pool after the 15% holdout;
+# strata: MTS1 338, MTS2 2081, MTS3 12879, MTS4 23490, MTS5 3301). Stratified
+# profiles must stay jointly feasible across the 5 disjoint clinics, which is
+# why the triage profiles vary around the pool proportions rather than being
+# extreme: an "acuity-heavy" clinic of 5000 cases with 35% MTS-2 would alone
+# exhaust the whole MTS-2 stratum.
 
 seed: 42
 
@@ -10,23 +18,23 @@ scenarios:
   # ---- Level 1: case volume only ----
   level1_volume:
     level: level1
-    sizes: [2000, 1500, 1000, 500, 200]
+    sizes: [8000, 6000, 4500, 3000, 1500]
 
   # ---- Level 2: age distribution (equal volume) ----
   level2_age:
     level: level2
-    n_per_site: 1000
+    n_per_site: 5000
     profiles:
-      - {"0-17": 0.30, "18-39": 0.30, "40-64": 0.20, "65+": 0.20}   # pediatric / young ED
+      - {"0-17": 0.28, "18-39": 0.30, "40-64": 0.22, "65+": 0.20}   # young ED
       - {"0-17": 0.10, "18-39": 0.20, "40-64": 0.30, "65+": 0.40}   # elderly-heavy
       - {"0-17": 0.20, "18-39": 0.30, "40-64": 0.30, "65+": 0.20}   # balanced urban
-      - {"0-17": 0.05, "18-39": 0.15, "40-64": 0.30, "65+": 0.50}   # geriatric center
+      - {"0-17": 0.06, "18-39": 0.16, "40-64": 0.30, "65+": 0.48}   # geriatric center
       - {"0-17": 0.25, "18-39": 0.25, "40-64": 0.25, "65+": 0.25}   # uniform reference
 
   # ---- Level 3: gender distribution (equal volume) ----
   level3_gender:
     level: level3
-    n_per_site: 1000
+    n_per_site: 5000
     profiles:
       - {"M": 0.70, "F": 0.30}
       - {"M": 0.30, "F": 0.70}
@@ -34,28 +42,40 @@ scenarios:
       - {"M": 0.60, "F": 0.40}
       - {"M": 0.40, "F": 0.60}
 
-  # ---- Level 4: MTS triage mix (equal volume) ----
+  # ---- Level 4: MTS triage mix (equal volume, pool-feasible profiles) ----
   level4_triage:
     level: level4
-    n_per_site: 1000
+    n_per_site: 5000
     profiles:
-      - {"1": 0.15, "2": 0.35, "3": 0.30, "4": 0.15, "5": 0.05}   # level-1 trauma center
-      - {"1": 0.02, "2": 0.10, "3": 0.30, "4": 0.40, "5": 0.18}   # low-acuity walk-in
-      - {"1": 0.05, "2": 0.20, "3": 0.40, "4": 0.25, "5": 0.10}   # typical mixed ED
-      - {"1": 0.10, "2": 0.30, "3": 0.35, "4": 0.20, "5": 0.05}   # urban high-acuity
-      - {"1": 0.03, "2": 0.15, "3": 0.35, "4": 0.30, "5": 0.17}   # suburban community
+      - {"1": 0.015, "2": 0.100, "3": 0.450, "4": 0.380, "5": 0.055}  # high-acuity urban
+      - {"1": 0.002, "2": 0.020, "3": 0.180, "4": 0.620, "5": 0.178}  # low-acuity walk-in
+      - {"1": 0.008, "2": 0.050, "3": 0.300, "4": 0.565, "5": 0.077}  # typical mixed ED
+      - {"1": 0.012, "2": 0.120, "3": 0.420, "4": 0.400, "5": 0.048}  # referral center
+      - {"1": 0.003, "2": 0.030, "3": 0.220, "4": 0.600, "5": 0.147}  # suburban community
 
-  # ---- Combined: all four axes vary simultaneously ----
+  # ---- Level 5: CONCEPT SHIFT (identical case-mix, different P(y|x)) ----
+  # Label-conditional stratified sampling: every clinic draws the same triage
+  # case-mix, but within each stratum the odds of drawing an admitted case are
+  # scaled per site. Models unobserved catchment differences / admission-policy
+  # variation at equal formal acuity. This is the positive control for LoRA
+  # personalisation: unlike Levels 1-4 (pure covariate shift), a global model
+  # cannot be optimal for all sites here.
+  level5_concept:
+    level: level5
+    n_per_site: 5000
+    odds_multipliers: [0.5, 0.75, 1.0, 1.33, 2.0]
+
+  # ---- Combined: volume + age + triage vary simultaneously ----
   combined:
     level: combined
     sites:
-      - {n_cases: 2000, age_weights: {"0-17": 0.30, "18-39": 0.30, "40-64": 0.20, "65+": 0.20},
-         triage_weights: {"1": 0.15, "2": 0.35, "3": 0.30, "4": 0.15, "5": 0.05}}
-      - {n_cases: 1500, age_weights: {"0-17": 0.10, "18-39": 0.20, "40-64": 0.30, "65+": 0.40},
-         triage_weights: {"1": 0.02, "2": 0.10, "3": 0.30, "4": 0.40, "5": 0.18}}
-      - {n_cases: 1000, age_weights: {"0-17": 0.20, "18-39": 0.30, "40-64": 0.30, "65+": 0.20},
-         triage_weights: {"1": 0.05, "2": 0.20, "3": 0.40, "4": 0.25, "5": 0.10}}
-      - {n_cases: 500, age_weights: {"0-17": 0.05, "18-39": 0.15, "40-64": 0.30, "65+": 0.50},
-         triage_weights: {"1": 0.10, "2": 0.30, "3": 0.35, "4": 0.20, "5": 0.05}}
-      - {n_cases: 200, age_weights: {"0-17": 0.25, "18-39": 0.25, "40-64": 0.25, "65+": 0.25},
+      - {n_cases: 6000, age_weights: {"0-17": 0.28, "18-39": 0.30, "40-64": 0.22, "65+": 0.20},
+         triage_weights: {"1": 0.015, "2": 0.100, "3": 0.450, "4": 0.380, "5": 0.055}}
+      - {n_cases: 4500, age_weights: {"0-17": 0.10, "18-39": 0.20, "40-64": 0.30, "65+": 0.40},
+         triage_weights: {"1": 0.002, "2": 0.020, "3": 0.180, "4": 0.620, "5": 0.178}}
+      - {n_cases: 3500, age_weights: {"0-17": 0.20, "18-39": 0.30, "40-64": 0.30, "65+": 0.20},
+         triage_weights: {"1": 0.008, "2": 0.050, "3": 0.300, "4": 0.565, "5": 0.077}}
+      - {n_cases: 2500, age_weights: {"0-17": 0.06, "18-39": 0.16, "40-64": 0.30, "65+": 0.48},
+         triage_weights: {"1": 0.012, "2": 0.120, "3": 0.420, "4": 0.400, "5": 0.048}}
+      - {n_cases: 1200, age_weights: {"0-17": 0.25, "18-39": 0.25, "40-64": 0.25, "65+": 0.25},
          gender_weights: {"M": 0.70, "F": 0.30}}

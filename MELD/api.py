@@ -145,6 +145,10 @@ def _train_worker(job: TrainJob, backbone_bytes: bytes | None) -> None:
             result = container.wait()
             logs = container.logs().decode("utf-8", errors="replace")
             job_context.logger.info(f"Container logs:\n{logs}")
+            # Persist container logs next to the job outputs so they survive the
+            # container's destruction and can be fetched via GET /logs/{job_id}.
+            with open(os.path.join(output_dir, "container_logs.txt"), "w") as lf:
+                lf.write(logs)
 
             if result["StatusCode"] != 0:
                 raise RuntimeError(f"Container exited with code {result['StatusCode']}:\n{logs}")
@@ -232,6 +236,46 @@ def get_results(job_id: str):
     with open(path, "rb") as f:
         data = f.read()
     return Response(data, mimetype="application/octet-stream")
+
+
+@app.route("/logs/<job_id>", methods=["GET"])
+def get_logs(job_id: str):
+    """Return the runtime container's logs for a job (also available for FAILED
+    jobs — that is exactly when they matter most)."""
+    with _lock:
+        job = _jobs.get(job_id)
+    if job is None:
+        return jsonify({"error": "unknown job_id"}), 404
+    path = os.path.join(job.output_dir, "container_logs.txt") if job.output_dir else ""
+    if not path or not os.path.isfile(path):
+        # No container logs (e.g. failure before the container started) —
+        # return the job's error message instead so the caller still gets context.
+        return Response(f"[no container logs]\njob state: {job.state}\nerror: {job.error}",
+                        mimetype="text/plain")
+    with open(path) as f:
+        return Response(f.read(), mimetype="text/plain")
+
+
+@app.route("/adapter", methods=["GET", "DELETE"])
+def get_adapter():
+    """GET: return this site's current LoRA adapter (from the persistent store).
+    DELETE: reset the store — REQUIRED between benchmark runs of different
+    backbones, because the volume outlives a single FL run and a stale adapter
+    from another architecture would otherwise be silently loaded in round 1.
+
+    NOTE: both verbs exist for the SIMULATION's host-side harness only. In a
+    real deployment the adapter never leaves (nor is remotely wiped from) the site.
+    """
+    path = os.path.join(ADAPTER_STORE, "adapter.pt")
+    if request.method == "DELETE":
+        if os.path.isfile(path):
+            os.remove(path)
+            return jsonify({"status": "adapter removed"})
+        return jsonify({"status": "no adapter stored"})
+    if not os.path.isfile(path):
+        return jsonify({"error": "no adapter stored"}), 404
+    with open(path, "rb") as f:
+        return Response(f.read(), mimetype="application/octet-stream")
 
 
 @app.route("/health", methods=["GET"])

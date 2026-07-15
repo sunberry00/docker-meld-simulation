@@ -12,7 +12,6 @@
     "pain_level_missing",
     "triage_score_missing",
     "is_weekend",
-    "is_isolated",
     "gender=F",
     "gender=M",
     "referral_type=KLINV",
@@ -23,21 +22,12 @@
     "referral_type=OTH",
     "referral_type=RD",
     "referral_type=VAP",
-    "referral_type=__MISSING__",
     "time_of_day=Afternoon",
     "time_of_day=Evening",
     "time_of_day=Morning",
     "time_of_day=Night",
-    "cedis_code=003",
-    "cedis_code=005",
-    "cedis_code=251",
-    "cedis_code=551",
-    "cedis_code=651",
-    "cedis_code=704",
-    "cedis_code=866",
-    "cedis_code=999",
     "cedis_code=OTH",
     "cedis_code=OTHER"
   ],
-  "input_dim": 38
+  "input_dim": 28
 }

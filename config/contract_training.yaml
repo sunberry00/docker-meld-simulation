@@ -25,6 +25,12 @@ runtime:
     TRAIN_EPOCHS: "5"
     TRAIN_BATCH_SIZE: "256"
     TRAIN_LR: "0.001"
+    # Variant switch: "1" = FedAvg+LoRA (private per-site adapters),
+    #                 "0" = pure FedAvg (backbone only). Flip per experiment.
+    USE_LORA: "1"
+    # Architecture switch: picks /artifact/model_config_<BACKBONE>.json
+    # (fttransformer | simple-transformer | tabtransformer | saint)
+    BACKBONE: "simple-transformer"
 
 input_schema:
   temporal_scope:

@@ -79,6 +79,9 @@ class ClinicSpec:
     age_weights: dict[str, float] | None = None       # band -> weight
     gender_weights: dict[str, float] | None = None     # M/F -> weight
     triage_weights: dict[str, float] | None = None     # score -> weight
+    # Level 5 (concept shift): odds multiplier on the admitted label WITHIN each
+    # triage stratum. Case-mix stays identical across sites; P(y|x) differs.
+    admit_odds_mult: float | None = None
 
 
 def _stratified_sample(
@@ -135,6 +138,74 @@ def _age_band(age: float) -> str:
     return "65+"
 
 
+
+def _concept_shift_sample(
+    df: pd.DataFrame,
+    n: int,
+    mult: float,
+    rng: np.random.Generator,
+    stratum_col: str = "triage_score",
+    label_col: str = "admitted",
+) -> pd.DataFrame:
+    """Label-conditional stratified sampling: the concept-shift generator.
+
+    Every site draws the SAME case-mix (each stratum contributes its pool
+    proportion), but WITHIN each stratum the odds of drawing an admitted case
+    are scaled by `mult`:
+
+        odds_site = mult * p0 / (1 - p0),   p_site = odds_site / (1 + odds_site)
+
+    No value is ever overwritten — only which encounters are drawn changes.
+    The observable covariate distribution is (approximately) identical across
+    sites, while P(admitted | stratum) differs by construction: pure concept
+    shift, modelling unobserved catchment-population differences at equal
+    formal acuity.
+    """
+    strata = df[stratum_col].astype(str)
+    labels = df[label_col].astype(int)
+    parts = []
+
+    for stratum, group in df.groupby(strata):
+        n_s = int(round(n * len(group) / len(df)))
+        if n_s == 0:
+            continue
+        y = labels.loc[group.index]
+        p0 = float(y.mean())
+        if 0.0 < p0 < 1.0:
+            odds = mult * p0 / (1.0 - p0)
+            p_site = odds / (1.0 + odds)
+        else:
+            p_site = p0                       # degenerate stratum: nothing to shift
+        n_pos = int(round(n_s * p_site))
+        n_neg = n_s - n_pos
+
+        pos_pool, neg_pool = group[y == 1], group[y == 0]
+        take_pos = min(n_pos, len(pos_pool))
+        take_neg = min(n_neg, len(neg_pool))
+        # deficit in one label is topped up from the other (recorded prevalence
+        # in the manifest reflects what was actually achieved)
+        if take_pos < n_pos:
+            take_neg = min(n_s - take_pos, len(neg_pool))
+        elif take_neg < n_neg:
+            take_pos = min(n_s - take_neg, len(pos_pool))
+
+        if take_pos > 0:
+            parts.append(pos_pool.sample(n=take_pos, random_state=int(rng.integers(1 << 31))))
+        if take_neg > 0:
+            parts.append(neg_pool.sample(n=take_neg, random_state=int(rng.integers(1 << 31))))
+
+    result = pd.concat(parts, ignore_index=False) if parts else df.head(0)
+    if len(result) > n:
+        result = result.sample(n=n, random_state=int(rng.integers(1 << 31)))
+    elif len(result) < n:
+        remaining = df.loc[~df.index.isin(result.index)]
+        extra = min(n - len(result), len(remaining))
+        if extra > 0:
+            result = pd.concat([result, remaining.sample(n=extra,
+                                random_state=int(rng.integers(1 << 31)))])
+    return result.reset_index(drop=True)
+
+
 def sample_clinic(
     df: pd.DataFrame,
     spec: ClinicSpec,
@@ -148,6 +219,9 @@ def sample_clinic(
     pool = df.copy()
     n = min(spec.n_cases, len(pool))
 
+    # Level 5: concept shift (label-conditional within strata)
+    if spec.admit_odds_mult is not None:
+        return _concept_shift_sample(pool, n, spec.admit_odds_mult, rng)
     # Level 2: age stratification
     if spec.age_weights:
         pool["_age_band"] = pool["age_in_years"].apply(_age_band)
@@ -230,12 +304,25 @@ def build_combined(df: pd.DataFrame, cfg: dict, rng: np.random.Generator) -> lis
     return specs
 
 
+def build_level5(df: pd.DataFrame, cfg: dict, rng: np.random.Generator) -> list[ClinicSpec]:
+    """Level 5: concept shift — identical case-mix, site-specific P(admitted|stratum).
+
+    Multipliers < 1 model conservative catchments (fewer admissions at equal
+    acuity), > 1 the opposite. mult = 1.0 is the neutral reference site.
+    """
+    n = cfg.get("n_per_site", 5000)
+    mults = cfg.get("odds_multipliers", [0.5, 0.75, 1.0, 1.33, 2.0])
+    return [ClinicSpec(site_id=i, n_cases=n, admit_odds_mult=m)
+            for i, m in enumerate(mults)]
+
+
 LEVEL_BUILDERS = {
     "level1": build_level1,
     "level2": build_level2,
     "level3": build_level3,
     "level4": build_level4,
     "combined": build_combined,
+    "level5": build_level5,
 }
 
 
@@ -289,9 +376,16 @@ def run_scenario(
         "sites": [],
     }
 
+    # Sites PARTITION the pool: each clinic's encounters are removed before the
+    # next clinic samples. Without this, the same encounter could land in clinic
+    # A's train and clinic B's test, leaking training data into the evaluation
+    # of the central and federated models. (Sequential draw order is seeded and
+    # recorded, hence fully reproducible.)
+    remaining = pool
     for spec in specs:
         site_rng = np.random.default_rng(seed + spec.site_id + 1)
-        subset = sample_clinic(pool, spec, site_rng)
+        subset = sample_clinic(remaining, spec, site_rng)
+        remaining = remaining[~remaining["encounter_num"].isin(subset["encounter_num"])]
 
         # 3. Chronological 70/15/15 within the clinic.
         tr, va, te = split_clinic(subset, train_frac, val_frac)
@@ -318,6 +412,15 @@ def run_scenario(
         if "triage_score" in subset.columns:
             ts = pd.to_numeric(subset["triage_score"], errors="coerce")
             site_info["mean_triage"] = round(float(ts.mean()), 2) if ts.notna().any() else None
+            # Concept-shift evidence: P(admitted | stratum) for the two largest
+            # strata. Under pure covariate shift these match across sites; under
+            # Level 5 they differ by construction.
+            if "admitted" in subset.columns:
+                t_str = subset["triage_score"].astype(str)
+                for stratum in ("3", "4"):
+                    grp = subset[t_str == stratum]
+                    if len(grp) >= 30:
+                        site_info[f"prev_mts{stratum}"] = round(float(grp["admitted"].mean()), 4)
         manifest["sites"].append(site_info)
 
     with open(os.path.join(out_dir, "manifest.json"), "w") as f:
